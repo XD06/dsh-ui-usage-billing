@@ -80,4 +80,33 @@ describe('TrendChart', () => {
     expect(container.textContent).toContain('No trend data yet')
   })
 
+  it('draws the calls line as a smooth cubic curve instead of straight segments', () => {
+    // 本 fork 的定制：调用量折线走单调三次贝塞尔。回归守卫——折线路径一旦退回
+    // `M…L…` 拼接，这条断言会失败，避免上游合并时静默丢失平滑效果。
+    const { container } = render(<TrendChart data={DATA} models={MODELS} />)
+    const line = [...container.querySelectorAll('path')].find(p => p.getAttribute('fill') === 'none')
+    expect(line).toBeDefined()
+    const d = line?.getAttribute('d') ?? ''
+    // 每个相邻点对之间一个 C 段：7 天 → 6 段贝塞尔，且不含直线段 L。
+    expect((d.match(/C/g) ?? []).length).toBe(DATA.length - 1)
+    expect(d).not.toContain('L')
+    // 起点仍是第一天，端点仍是最后一天（曲线不改变数据点位置）。
+    expect(d.startsWith('M')).toBe(true)
+  })
+
+  it('keeps the smooth curve inside the plotted value range (no overshoot below zero)', () => {
+    // 单调限幅：控制点 y 不得越过相邻两端点的 y 区间，否则曲线会在 0 轴下方鼓包。
+    const { container } = render(<TrendChart data={DATA} models={MODELS} />)
+    const line = [...container.querySelectorAll('path')].find(p => p.getAttribute('fill') === 'none')
+    const d = line?.getAttribute('d') ?? ''
+    const nums = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number)
+    // 解析 M x y C c1x c1y c2x c2y x y ...：y 值成对出现于每个坐标对。
+    const pairs: [number, number][] = []
+    for (let i = 0; i + 1 < nums.length; i += 2) pairs.push([nums[i]!, nums[i + 1]!])
+    const ys = pairs.map(([, y]) => y)
+    // 调用量单调递增（0,5,10…30），y 单调递减，因此曲线 y 不得低于最后一点。
+    const lastY = ys[ys.length - 1]!
+    for (const y of ys) expect(y).toBeGreaterThanOrEqual(lastY - 0.001)
+  })
+
 })

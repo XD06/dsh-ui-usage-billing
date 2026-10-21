@@ -57,6 +57,55 @@ function shortDate(iso: string): string {
   return `${Number(month)}/${Number(day)}`
 }
 
+/**
+ * 单调三次插值的切线：Fritsch–Carlson 限幅，保证曲线不冲出相邻数据点的取值区间
+ * （不会在 0 轴下方鼓包，也不会越过当日调用量峰值）。
+ * @param x0..x2 - 相邻三点的 x（等距递增）。
+ * @param y0..y2 - 对应点的 y（已翻转成屏幕坐标）。
+ * @returns 中间点处受两侧割线夹逼的斜率。
+ */
+function monotoneSlope(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): number {
+  const d1 = (y1 - y0) / (x1 - x0)
+  const d2 = (y2 - y1) / (x2 - x1)
+  // 两侧走向相反（局部极值）时切线归零，极值点被压成水平，杜绝过冲。
+  if (d1 === 0 || d2 === 0 || d1 * d2 < 0) return 0
+  return (2 * d1 * d2) / (d1 + d2)
+}
+
+/**
+ * 把逐点坐标串成平滑的 SVG 路径（单调三次贝塞尔，Catmull-Rom 的控制点形态）。
+ *
+ * 首尾各复制一次端点作为虚拟邻居，因此两端切线只有一个割线可参考，不会甩出弧。
+ * 控制点取「三分之一弦长」：`cp1 = p1 - m1/3`、`cp2 = p2 + m2/3`，斜率按
+ * {@link monotoneSlope} 限幅。
+ * @param points - 按 x 递增排列的屏幕坐标点。
+ * @returns `M … C …` 形式的路径串；点数不足 2 时退化为 `M`（不产生曲线）。
+ */
+function smoothPath(points: readonly { x: number; y: number }[]): string {
+  if (points.length === 0) return ''
+  const first = points[0]
+  if (first === undefined || points.length === 1) return `M${first?.x ?? 0} ${first?.y ?? 0}`
+  const at = (i: number): { x: number; y: number } => {
+    const clamped = Math.min(Math.max(i, 0), points.length - 1)
+    return points[clamped] as { x: number; y: number }
+  }
+  let path = `M${first.x} ${first.y}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = at(i - 1)
+    const p1 = at(i)
+    const p2 = at(i + 1)
+    const p3 = at(i + 2)
+    const m1 = monotoneSlope(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y)
+    const m2 = monotoneSlope(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+    const cp1x = p1.x + (p2.x - p1.x) / 3
+    const cp1y = p1.y + (m1 * (p2.x - p1.x)) / 3
+    const cp2x = p2.x - (p2.x - p1.x) / 3
+    const cp2y = p2.y - (m2 * (p2.x - p1.x)) / 3
+    path += ` C${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
+  }
+  return path
+}
+
 /* shortNumber 复用 TokenPanel 的实现（同一 bundle，避免两份重复定义）。 */
 
 /** Ticks every `step` items for sparse axis labels. */
@@ -153,10 +202,9 @@ export function TrendChart({ data, models = [], currency = 'cny', metric = 'cost
     const costTicks = [0, 0.25, 0.5, 0.75, 1].map(f => maxCost * f).reverse()
     const callsTicks = [0, 0.25, 0.5, 0.75, 1].map(f => maxCalls * f).reverse()
     // 调用量折线路径：柱 = 每日分模型费用，线 = 每日总调用次数。
-    const linePath = data.map((d, i) => {
-      const y = yCalls(d.calls)
-      return `${i === 0 ? 'M' : 'L'}${inner(i)} ${y}`
-    }).join(' ')
+    // 平滑曲线（单调三次贝塞尔）：面积填充复用同一条路径串，故线与下方渐变面积一起变平滑；
+    // 悬停十字线仍按每日真实 x 吸附，数据点位置不变。
+    const linePath = smoothPath(data.map((d, i) => ({ x: inner(i), y: yCalls(d.calls) })))
     return { n, plotW, plotH, inner, yCost, yCalls, barW, bars, costTicks, callsTicks, linePath }
   }, [data, models, metric])
 
