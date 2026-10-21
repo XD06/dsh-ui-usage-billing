@@ -109,4 +109,28 @@ describe('TrendChart', () => {
     for (const y of ys) expect(y).toBeGreaterThanOrEqual(lastY - 0.001)
   })
 
+  it('emits only finite coordinates, never NaN, in the calls-line path', () => {
+    // 回归：端点曾被「复制成虚拟邻居」，使相邻两点 x 相同 → 割线 0/0 = NaN。
+    // NaN 参与比较恒为 false，会绕过所有限幅分支，最终整条 path 变 NaN，
+    // 浏览器直接不渲染该段——表现就是折线在末端突然断开（真实踩过）。
+    const { container } = render(<TrendChart data={DATA} models={MODELS} />)
+    const line = [...container.querySelectorAll('path')].find(p => p.getAttribute('fill') === 'none')
+    const d = line?.getAttribute('d') ?? ''
+    expect(d).not.toContain('NaN')
+    expect(d).not.toContain('Infinity')
+    expect(d).not.toContain('undefined')
+    // 每个坐标都必须能解析成有限数：末尾若残留非法值，split 会拿到非数字。
+    for (const token of d.split(/[MC\s]+/).filter(Boolean)) {
+      expect(Number.isFinite(Number(token))).toBe(true)
+    }
+  })
+
+  it('renders a single-day series without dividing by zero', () => {
+    // n === 1 时首尾重合，是端点退化最极端的情形。
+    const one: TrendPoint[] = [{ date: '2026-08-10', cost: 1, calls: 3 }]
+    const { container } = render(<TrendChart data={one} models={[]} />)
+    const line = [...container.querySelectorAll('path')].find(p => p.getAttribute('fill') === 'none')
+    expect(line?.getAttribute('d') ?? '').not.toContain('NaN')
+  })
+
 })

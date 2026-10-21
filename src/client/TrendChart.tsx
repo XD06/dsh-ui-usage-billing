@@ -60,47 +60,73 @@ function shortDate(iso: string): string {
 /**
  * 单调三次插值的切线：Fritsch–Carlson 限幅，保证曲线不冲出相邻数据点的取值区间
  * （不会在 0 轴下方鼓包，也不会越过当日调用量峰值）。
- * @param x0..x2 - 相邻三点的 x（等距递增）。
+ *
+ * 三点退化（`dx` 为 0）时返回 0 而不是继续做除法：0/0 会得到 `NaN`，而 `NaN`
+ * 参与任何比较都是 `false`，会绕过下面的全部分支判断并污染整条路径。
+ * @param x0..x2 - 相邻三点的 x（严格递增，退化调用方需自行规避）。
  * @param y0..y2 - 对应点的 y（已翻转成屏幕坐标）。
  * @returns 中间点处受两侧割线夹逼的斜率。
  */
 function monotoneSlope(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number): number {
-  const d1 = (y1 - y0) / (x1 - x0)
-  const d2 = (y2 - y1) / (x2 - x1)
+  const dx1 = x1 - x0
+  const dx2 = x2 - x1
+  if (dx1 === 0 || dx2 === 0) return 0
+  const d1 = (y1 - y0) / dx1
+  const d2 = (y2 - y1) / dx2
   // 两侧走向相反（局部极值）时切线归零，极值点被压成水平，杜绝过冲。
-  if (d1 === 0 || d2 === 0 || d1 * d2 < 0) return 0
+  // 用 `<= 0` 一并覆盖 d1 或 d2 为 0 的平段。
+  if (d1 * d2 <= 0) return 0
+  // 同号时调和平均：|m| ≤ 2·min(|d1|,|d2|) < 3·min，满足 Fritsch–Carlson 不越界条件。
   return (2 * d1 * d2) / (d1 + d2)
 }
 
 /**
  * 把逐点坐标串成平滑的 SVG 路径（单调三次贝塞尔，Catmull-Rom 的控制点形态）。
  *
- * 首尾各复制一次端点作为虚拟邻居，因此两端切线只有一个割线可参考，不会甩出弧。
- * 控制点取「三分之一弦长」：`cp1 = p1 - m1/3`、`cp2 = p2 + m2/3`，斜率按
- * {@link monotoneSlope} 限幅。
+ * 切线按点逐个求：内部点用 {@link monotoneSlope} 双侧夹逼，**首尾点用单侧割线**
+ * ——端点没有第二个邻居，若照搬「复制端点作虚拟邻居」会让 `dx` 退化为 0，
+ * 因此这里直接给端点一条单侧斜率，从根上避免重复坐标。
+ * 控制点取「三分之一弦长」：`cp1 = p1 + m1·dx/3`、`cp2 = p2 - m2·dx/3`。
  * @param points - 按 x 递增排列的屏幕坐标点。
  * @returns `M … C …` 形式的路径串；点数不足 2 时退化为 `M`（不产生曲线）。
  */
 function smoothPath(points: readonly { x: number; y: number }[]): string {
   if (points.length === 0) return ''
   const first = points[0]
-  if (first === undefined || points.length === 1) return `M${first?.x ?? 0} ${first?.y ?? 0}`
-  const at = (i: number): { x: number; y: number } => {
-    const clamped = Math.min(Math.max(i, 0), points.length - 1)
-    return points[clamped] as { x: number; y: number }
-  }
+  if (first === undefined) return ''
+  if (points.length === 1) return `M${first.x} ${first.y}`
+  const last = points.length - 1
+  const p = (i: number): { x: number; y: number } => points[i] as { x: number; y: number }
+
+  // 每个点的切线斜率：内部双侧限幅，端点单侧割线。
+  const tangent = points.map((_, i) => {
+    if (i === 0) {
+      const a = p(0)
+      const b = p(1)
+      return b.x === a.x ? 0 : (b.y - a.y) / (b.x - a.x)
+    }
+    if (i === last) {
+      const a = p(last - 1)
+      const b = p(last)
+      return b.x === a.x ? 0 : (b.y - a.y) / (b.x - a.x)
+    }
+    const a = p(i - 1)
+    const b = p(i)
+    const c = p(i + 1)
+    return monotoneSlope(a.x, a.y, b.x, b.y, c.x, c.y)
+  })
+
   let path = `M${first.x} ${first.y}`
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = at(i - 1)
-    const p1 = at(i)
-    const p2 = at(i + 1)
-    const p3 = at(i + 2)
-    const m1 = monotoneSlope(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y)
-    const m2 = monotoneSlope(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
-    const cp1x = p1.x + (p2.x - p1.x) / 3
-    const cp1y = p1.y + (m1 * (p2.x - p1.x)) / 3
-    const cp2x = p2.x - (p2.x - p1.x) / 3
-    const cp2y = p2.y - (m2 * (p2.x - p1.x)) / 3
+  for (let i = 0; i < last; i++) {
+    const p1 = p(i)
+    const p2 = p(i + 1)
+    const dx = p2.x - p1.x
+    const m1 = tangent[i] ?? 0
+    const m2 = tangent[i + 1] ?? 0
+    const cp1x = p1.x + dx / 3
+    const cp1y = p1.y + (m1 * dx) / 3
+    const cp2x = p2.x - dx / 3
+    const cp2y = p2.y - (m2 * dx) / 3
     path += ` C${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
   }
   return path
