@@ -109,15 +109,31 @@ git push origin main
 
 ---
 
-## 4. 已知的环境问题（与本定制无关）
+## 4. 上游同步记录
+
+| 日期 | 上游提交 | 内容 | 冲突 | 结果 |
+|---|---|---|---|---|
+| 2026-10-21 | `d3b4d44` | fix(#103): 会话标题跟随重命名——回落先给最近一次完成的聚合，读不动的会话用宿主侧标题 | 仅 `lib/client.js`（构建产物） | 源码零冲突，定制的 `smoothPath`/`monotoneSlope` 未被触碰；取一侧后重新 `tsc -b && tsdown` 覆盖，产物同时含两侧内容 |
+
+上游 `d3b4d44` 改动集中在「会话标题跟随重命名」链路
+（`src/aggregate.ts` / `src/index.ts` / `src/routes/usage-stats.ts` /
+`src/client/**` / `tests/aggregate.spec.ts` / `tests/stale-snapshot.client.spec.tsx`），
+**未触碰** `src/client/TrendChart.tsx` 与 `tests/trendchart.client.spec.tsx`。
+
+---
+
+## 5. 已知的环境问题（与本定制无关）
 
 `tests/ledger.spec.ts` 有 2 条锁竞争用例在**未改动的上游基线上同样失败**
 （`keeps failing while the contending lock is fresh`）。这是 Windows 下
 `dsh-atomic-write` 的 `kill(pid,0)` 锁回收行为差异，属上游既有问题，不影响本定制。
 
+> 已于 2026-10-21 用 `git worktree` 在合并前的 `e3a7a44` 上复现确认：
+> 同样是 2 failed / 9 passed，与合并无关。合并后全量为 715 passed / 2 failed。
+
 ---
 
-## 5. 后续想撤销定制
+## 6. 后续想撤销定制
 
 ```sh
 git revert <定制提交的 SHA>
